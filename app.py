@@ -1,5 +1,5 @@
 import streamlit as st
-import sqlite3
+import psycopg2
 import pandas as pd
 import matplotlib.pyplot as plt
 from fpdf import FPDF
@@ -32,7 +32,6 @@ st.markdown("""
     [data-testid="stSidebar"] { background-color: #0f172a; color: #ffffff; }
     [data-testid="stSidebar"] label, [data-testid="stSidebar"] .stMarkdown { color: #e2e8f0; }
     
-    /* Force sidebar logout button text color to black */
     div[data-testid="stSidebar"] button {
         color: black !important;
         font-weight: 600 !important;
@@ -40,219 +39,176 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# --- NORMALIZED DATABASE SCHEMA & SAFE MIGRATION ---
+# --- CLOUD DATABASE CONNECTION ---
 def get_connection():
-    return sqlite3.connect('blj_classes.db')
+    db_url = st.secrets["DATABASE_URL"]
+    return psycopg2.connect(db_url)
 
 def init_normalized_db():
     with get_connection() as conn:
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS Teachers (
-                teacher_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                username TEXT UNIQUE NOT NULL,
-                password_hash TEXT NOT NULL
-            )
-        ''')
-        cursor.execute('''
-            INSERT OR IGNORE INTO Teachers (username, password_hash) 
-            VALUES (?, ?)
-        ''', ("sir", hashlib.sha256("blj123".encode()).hexdigest()))
-        
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS Classes (
-                class_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                class_level TEXT UNIQUE NOT NULL
-            )
-        ''')
-        for cls in ["IX", "X", "XI", "XII"]:
-            cursor.execute("INSERT OR IGNORE INTO Classes (class_level) VALUES (?)", (cls,))
-
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS Students (
-                student_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                first_name TEXT NOT NULL,
-                last_name TEXT NOT NULL,
-                class_level TEXT NOT NULL,
-                subject TEXT NOT NULL,
-                parent_relation TEXT,
-                parent_phone TEXT NOT NULL
-            )
-        ''')
-        
-        cursor.execute("PRAGMA table_info(Students)")
-        std_cols = [info[1] for info in cursor.fetchall()]
-        if "parent_name" in std_cols and "parent_relation" not in std_cols:
-            try:
-                cursor.execute("ALTER TABLE Students RENAME COLUMN parent_name TO parent_relation")
-            except Exception:
-                pass
-
-        # --- PURGE SAMPLE DATA FROM CLASS IX IF ALREADY PRESENT ---
-        sample_purge_query = '''
-            SELECT student_id FROM Students 
-            WHERE class_level = 'IX' AND (
-                (first_name = 'Aarav' AND last_name = 'Sharma') OR 
-                (first_name = 'Diya' AND last_name = 'Patel') OR 
-                (first_name = 'Kabir' AND last_name = 'Mehta')
-            )
-        '''
-        sample_ids = pd.read_sql_query(sample_purge_query, conn)['student_id'].tolist()
-        if sample_ids:
-            id_tuple = tuple(sample_ids) if len(sample_ids) > 1 else f"({sample_ids[0]})"
-            cursor.execute(f"DELETE FROM Test_Results WHERE student_id IN {id_tuple}")
-            cursor.execute(f"DELETE FROM Attendance WHERE student_id IN {id_tuple}")
-            cursor.execute(f"DELETE FROM Assignment_Submissions WHERE student_id IN {id_tuple}")
-            cursor.execute(f"DELETE FROM Students WHERE student_id IN {id_tuple}")
-
-        # --- PRE-SEEDED CLASS IX & CLASS X STUDENT ROSTERS (WITHOUT SAMPLES) ---
-        students_roster = [
-            # Class IX (Clean Roster)
-            ("Tanav", "Sharma", "IX", "Maths, Science", "Father", "9876543201"),
-            ("Nevin", "", "IX", "Maths, Science", "Father", "9876543202"),
-            ("Ronav", "Moolwani", "IX", "Maths, Science", "Father", "9876543203"),
-            ("Hridyansh", "Gupta", "IX", "Maths, Science", "Father", "9876543204"),
-            ("Sourish", "Gupta", "IX", "Maths, Science", "Father", "9876543205"),
-            ("Parinidhi", "Agarwal", "IX", "Maths, Science", "Father", "9876543206"),
-            ("Akshita", "Sethi", "IX", "Maths, Science", "Father", "9876543207"),
-            ("Tejasvi", "Gehlot", "IX", "Maths, Science", "Father", "9876543208"),
-            ("Jinal", "Jangid", "IX", "Maths, Science", "Father", "9876543209"),
-            ("Aradhya", "Mittal", "IX", "Maths, Science", "Father", "9876543210"),
-            ("Aarav", "Mittal", "IX", "Maths, Science", "Father", "9876543211"),
-            ("Aayush", "Jain", "IX", "Maths, Science", "Father", "9876543212"),
-            
-            # Class X (With SST for Aadit, Gunjan, Jaanesh)
-            ("Aadit", "Goyal", "X", "Maths, Science, SST", "Father", "9876543220"),
-            ("Gunjan", "Yadav", "X", "Maths, Science, SST", "Father", "9876543221"),
-            ("Jaanesh", "Babel", "X", "Maths, Science, SST", "Father", "9876543222"),
-            ("Aakansha", "Krishna", "X", "Maths, Science", "Father", "9876543223"),
-            ("Aanya", "Soni", "X", "Maths, Science", "Father", "9876543224"),
-            ("Aarav", "Mehra", "X", "Maths, Science", "Father", "9876543225"),
-            ("Aarav", "Sethi", "X", "Maths, Science", "Father", "9876543226"),
-            ("Aarush", "Rawat", "X", "Maths, Science", "Father", "9876543227"),
-            ("Aaryan", "Sethi", "X", "Maths, Science", "Father", "9876543228"),
-            ("Aashna", "Sharma", "X", "Maths, Science", "Father", "9876543229"),
-            ("Aditya", "Jangid", "X", "Maths, Science", "Father", "9876543230"),
-            ("Advik", "Mittal", "X", "Maths, Science", "Father", "9876543231"),
-            ("Anav", "Kumawat", "X", "Maths, Science", "Father", "9876543232"),
-            ("Ariana", "Bari", "X", "Maths, Science", "Father", "9876543233"),
-            ("Arnav", "Sharma", "X", "Maths, Science", "Father", "9876543234"),
-            ("Arnav", "Sharma (16)", "X", "Maths, Science", "Father", "9876543235"),
-            ("Avani", "Ojha", "X", "Maths, Science", "Father", "9876543236"),
-            ("Bhawika", "Sharma", "X", "Maths, Science", "Father", "9876543237"),
-            ("Chahak", "Sain", "X", "Maths, Science", "Father", "9876543238"),
-            ("Devan", "Pancholi", "X", "Maths, Science", "Father", "9876543239"),
-            ("Devik", "Chamoli", "X", "Maths, Science", "Father", "9876543240"),
-            ("Devyansh", "Sharma", "X", "Maths, Science", "Father", "9876543241"),
-            ("Harsh", "Yadav", "X", "Maths, Science", "Father", "9876543242"),
-            ("Harshit", "Budania", "X", "Maths, Science", "Father", "9876543243"),
-            ("Kabir", "Sharma", "X", "Maths, Science", "Father", "9876543244"),
-            ("Kanish", "Bhagera", "X", "Maths, Science", "Father", "9876543245"),
-            ("Krisha", "Mathur", "X", "Maths, Science", "Father", "9876543246"),
-            ("Mahi", "Sharma", "X", "Maths, Science", "Father", "9876543247"),
-            ("Mahika", "Bothra", "X", "Maths, Science", "Father", "9876543248"),
-            ("Manan", "Sharma", "X", "Maths, Science", "Father", "9876543249"),
-            ("Manasv Singh", "Rajawat", "X", "Maths, Science", "Father", "9876543250"),
-            ("Naitik", "Dalmia", "X", "Maths, Science", "Father", "9876543251"),
-            ("Navya", "Garg", "X", "Maths, Science", "Father", "9876543252"),
-            ("Parth", "Sharma", "X", "Maths, Science", "Father", "9876543253"),
-            ("Prerak", "Jain", "X", "Maths, Science", "Father", "9876543254"),
-            ("Rajvi", "Mamoria", "X", "Maths, Science", "Father", "9876543255"),
-            ("Rebecca", "Samuel", "X", "Maths, Science", "Father", "9876543256"),
-            ("Risha", "Agarwal", "X", "Maths, Science", "Father", "9876543257"),
-            ("Rishabh", "Jain", "X", "Maths, Science", "Father", "9876543258"),
-            ("Sadhana", "Mahawar", "X", "Maths, Science", "Father", "9876543259"),
-            ("Shiksha", "Sharma", "X", "Maths, Science", "Father", "9876543260"),
-            ("Shivi", "Sharma", "X", "Maths, Science", "Father", "9876543261"),
-            ("Shristhi", "Nangalia", "X", "Maths, Science", "Father", "9876543262"),
-            ("Shubham", "Agarwal", "X", "Maths, Science", "Father", "9876543263"),
-            ("Siddharth", "Kumar", "X", "Maths, Science", "Father", "9876543264")
-        ]
-        
-        for s in students_roster:
+        with conn.cursor() as cursor:
             cursor.execute('''
-                INSERT INTO Students (first_name, last_name, class_level, subject, parent_relation, parent_phone)
-                SELECT ?, ?, ?, ?, ?, ? 
-                WHERE NOT EXISTS (
-                    SELECT 1 FROM Students WHERE first_name = ? AND last_name = ? AND class_level = ?
-                )
-            ''', (s[0], s[1], s[2], s[3], s[4], s[5], s[0], s[1], s[2]))
+                CREATE TABLE IF NOT EXISTS Teachers (
+                    teacher_id SERIAL PRIMARY KEY,
+                    username TEXT UNIQUE NOT NULL,
+                    password_hash TEXT NOT NULL
+                );
+            ''')
+            cursor.execute('''
+                INSERT INTO Teachers (username, password_hash) 
+                VALUES (%s, %s)
+                ON CONFLICT (username) DO NOTHING;
+            ''', ("BLJclasses", hashlib.sha256("classesBLJ123".encode()).hexdigest()))
+            
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS Classes (
+                    class_id SERIAL PRIMARY KEY,
+                    class_level TEXT UNIQUE NOT NULL
+                );
+            ''')
+            for cls in ["IX", "X", "XI", "XII"]:
+                cursor.execute("INSERT INTO Classes (class_level) VALUES (%s) ON CONFLICT (class_level) DO NOTHING;", (cls,))
 
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS Subjects (
-                subject_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                subject_name TEXT NOT NULL,
-                class_level TEXT NOT NULL
-            )
-        ''')
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS Students (
+                    student_id SERIAL PRIMARY KEY,
+                    first_name TEXT NOT NULL,
+                    last_name TEXT NOT NULL,
+                    class_level TEXT NOT NULL,
+                    subject TEXT NOT NULL,
+                    parent_relation TEXT,
+                    parent_phone TEXT NOT NULL,
+                    CONSTRAINT unq_student UNIQUE (first_name, last_name, class_level)
+                );
+            ''')
 
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS Tests_Exams (
-                test_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                subject_id INTEGER,
-                exam_type TEXT NOT NULL,
-                exam_date DATE NOT NULL,
-                max_marks INTEGER NOT NULL,
-                chapter_name TEXT,
-                FOREIGN KEY(subject_id) REFERENCES Subjects(subject_id)
-            )
-        ''')
+            # Clean Roster Seed Data
+            students_roster = [
+                ("Tanav", "Sharma", "IX", "Maths, Science", "Father", "9876543201"),
+                ("Nevin", "", "IX", "Maths, Science", "Father", "9876543202"),
+                ("Ronav", "Moolwani", "IX", "Maths, Science", "Father", "9876543203"),
+                ("Hridyansh", "Gupta", "IX", "Maths, Science", "Father", "9876543204"),
+                ("Sourish", "Gupta", "IX", "Maths, Science", "Father", "9876543205"),
+                ("Parinidhi", "Agarwal", "IX", "Maths, Science", "Father", "9876543206"),
+                ("Akshita", "Sethi", "IX", "Maths, Science", "Father", "9876543207"),
+                ("Tejasvi", "Gehlot", "IX", "Maths, Science", "Father", "9876543208"),
+                ("Jinal", "Jangid", "IX", "Maths, Science", "Father", "9876543209"),
+                ("Aradhya", "Mittal", "IX", "Maths, Science", "Father", "9876543210"),
+                ("Aarav", "Mittal", "IX", "Maths, Science", "Father", "9876543211"),
+                ("Aayush", "Jain", "IX", "Maths, Science", "Father", "9876543212"),
+                ("Aadit", "Goyal", "X", "Maths, Science, SST", "Father", "9876543220"),
+                ("Gunjan", "Yadav", "X", "Maths, Science, SST", "Father", "9876543221"),
+                ("Jaanesh", "Babel", "X", "Maths, Science, SST", "Father", "9876543222"),
+                ("Aakansha", "Krishna", "X", "Maths, Science", "Father", "9876543223"),
+                ("Aanya", "Soni", "X", "Maths, Science", "Father", "9876543224"),
+                ("Aarav", "Mehra", "X", "Maths, Science", "Father", "9876543225"),
+                ("Aarav", "Sethi", "X", "Maths, Science", "Father", "9876543226"),
+                ("Aarush", "Rawat", "X", "Maths, Science", "Father", "9876543227"),
+                ("Aaryan", "Sethi", "X", "Maths, Science", "Father", "9876543228"),
+                ("Aashna", "Sharma", "X", "Maths, Science", "Father", "9876543229"),
+                ("Aditya", "Jangid", "X", "Maths, Science", "Father", "9876543230"),
+                ("Advik", "Mittal", "X", "Maths, Science", "Father", "9876543231"),
+                ("Anav", "Kumawat", "X", "Maths, Science", "Father", "9876543232"),
+                ("Ariana", "Bari", "X", "Maths, Science", "Father", "9876543233"),
+                ("Arnav", "Sharma", "X", "Maths, Science", "Father", "9876543234"),
+                ("Arnav", "Sharma (16)", "X", "Maths, Science", "Father", "9876543235"),
+                ("Avani", "Ojha", "X", "Maths, Science", "Father", "9876543236"),
+                ("Bhawika", "Sharma", "X", "Maths, Science", "Father", "9876543237"),
+                ("Chahak", "Sain", "X", "Maths, Science", "Father", "9876543238"),
+                ("Devan", "Pancholi", "X", "Maths, Science", "Father", "9876543239"),
+                ("Devik", "Chamoli", "X", "Maths, Science", "Father", "9876543240"),
+                ("Devyansh", "Sharma", "X", "Maths, Science", "Father", "9876543241"),
+                ("Harsh", "Yadav", "X", "Maths, Science", "Father", "9876543242"),
+                ("Harshit", "Budania", "X", "Maths, Science", "Father", "9876543243"),
+                ("Kabir", "Sharma", "X", "Maths, Science", "Father", "9876543244"),
+                ("Kanish", "Bhagera", "X", "Maths, Science", "Father", "9876543245"),
+                ("Krisha", "Mathur", "X", "Maths, Science", "Father", "9876543246"),
+                ("Mahi", "Sharma", "X", "Maths, Science", "Father", "9876543247"),
+                ("Mahika", "Bothra", "X", "Maths, Science", "Father", "9876543248"),
+                ("Manan", "Sharma", "X", "Maths, Science", "Father", "9876543249"),
+                ("Manasv Singh", "Rajawat", "X", "Maths, Science", "Father", "9876543250"),
+                ("Naitik", "Dalmia", "X", "Maths, Science", "Father", "9876543251"),
+                ("Navya", "Garg", "X", "Maths, Science", "Father", "9876543252"),
+                ("Parth", "Sharma", "X", "Maths, Science", "Father", "9876543253"),
+                ("Prerak", "Jain", "X", "Maths, Science", "Father", "9876543254"),
+                ("Rajvi", "Mamoria", "X", "Maths, Science", "Father", "9876543255"),
+                ("Rebecca", "Samuel", "X", "Maths, Science", "Father", "9876543256"),
+                ("Risha", "Agarwal", "X", "Maths, Science", "Father", "9876543257"),
+                ("Rishabh", "Jain", "X", "Maths, Science", "Father", "9876543258"),
+                ("Sadhana", "Mahawar", "X", "Maths, Science", "Father", "9876543259"),
+                ("Shiksha", "Sharma", "X", "Maths, Science", "Father", "9876543260"),
+                ("Shivi", "Sharma", "X", "Maths, Science", "Father", "9876543261"),
+                ("Shristhi", "Nangalia", "X", "Maths, Science", "Father", "9876543262"),
+                ("Shubham", "Agarwal", "X", "Maths, Science", "Father", "9876543263"),
+                ("Siddharth", "Kumar", "X", "Maths, Science", "Father", "9876543264")
+            ]
+            
+            for s in students_roster:
+                cursor.execute('''
+                    INSERT INTO Students (first_name, last_name, class_level, subject, parent_relation, parent_phone)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (first_name, last_name, class_level) DO NOTHING;
+                ''', s)
 
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS Test_Results (
-                result_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                test_id INTEGER,
-                student_id INTEGER,
-                marks_obtained REAL,
-                teacher_feedback TEXT,
-                FOREIGN KEY(test_id) REFERENCES Tests_Exams(test_id),
-                FOREIGN KEY(student_id) REFERENCES Students(student_id)
-            )
-        ''')
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS Subjects (
+                    subject_id SERIAL PRIMARY KEY,
+                    subject_name TEXT NOT NULL,
+                    class_level TEXT NOT NULL
+                );
+            ''')
 
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS Attendance (
-                attendance_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                student_id INTEGER,
-                date DATE NOT NULL,
-                status TEXT NOT NULL,
-                FOREIGN KEY(student_id) REFERENCES Students(student_id)
-            )
-        ''')
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS Tests_Exams (
+                    test_id SERIAL PRIMARY KEY,
+                    subject_id INTEGER REFERENCES Subjects(subject_id),
+                    exam_type TEXT NOT NULL,
+                    exam_date DATE NOT NULL,
+                    max_marks INTEGER NOT NULL,
+                    chapter_name TEXT
+                );
+            ''')
 
-        # --- ADVANCED PANELS TABLES & SAFE MIGRATIONS ---
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS Assignments (
-                assignment_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                class_level TEXT NOT NULL,
-                subject TEXT NOT NULL DEFAULT 'Maths (Core)',
-                title TEXT NOT NULL,
-                due_date DATE NOT NULL,
-                resource_link TEXT
-            )
-        ''')
-        
-        cursor.execute("PRAGMA table_info(Assignments)")
-        asg_cols = [info[1] for info in cursor.fetchall()]
-        if "resource_link" not in asg_cols:
-            try:
-                cursor.execute("ALTER TABLE Assignments ADD COLUMN resource_link TEXT")
-            except Exception:
-                pass
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS Test_Results (
+                    result_id SERIAL PRIMARY KEY,
+                    test_id INTEGER REFERENCES Tests_Exams(test_id),
+                    student_id INTEGER REFERENCES Students(student_id),
+                    marks_obtained REAL,
+                    teacher_feedback TEXT
+                );
+            ''')
 
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS Assignment_Submissions (
-                submission_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                assignment_id INTEGER,
-                student_id INTEGER,
-                status TEXT NOT NULL,
-                remarks TEXT,
-                FOREIGN KEY(assignment_id) REFERENCES Assignments(assignment_id),
-                FOREIGN KEY(student_id) REFERENCES Students(student_id)
-            )
-        ''')
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS Attendance (
+                    attendance_id SERIAL PRIMARY KEY,
+                    student_id INTEGER REFERENCES Students(student_id),
+                    date DATE NOT NULL,
+                    status TEXT NOT NULL
+                );
+            ''')
 
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS Assignments (
+                    assignment_id SERIAL PRIMARY KEY,
+                    class_level TEXT NOT NULL,
+                    subject TEXT NOT NULL DEFAULT 'Maths (Core)',
+                    title TEXT NOT NULL,
+                    due_date DATE NOT NULL,
+                    resource_link TEXT
+                );
+            ''')
+
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS Assignment_Submissions (
+                    submission_id SERIAL PRIMARY KEY,
+                    assignment_id INTEGER REFERENCES Assignments(assignment_id),
+                    student_id INTEGER REFERENCES Students(student_id),
+                    status TEXT NOT NULL,
+                    remarks TEXT,
+                    CONSTRAINT unq_asg_sub UNIQUE (assignment_id, student_id)
+                );
+            ''')
         conn.commit()
 
 init_normalized_db()
@@ -273,22 +229,26 @@ def check_password():
             username = st.text_input("Username")
             password = st.text_input("Password", type="password")
             if st.form_submit_button("🔒 Secure Login", use_container_width=True):
-                with get_connection() as conn:
-                    cursor = conn.cursor()
-                    pass_hash = hashlib.sha256(password.encode()).hexdigest()
-                    cursor.execute("SELECT * FROM Teachers WHERE username = ? AND password_hash = ?", (username, pass_hash))
-                    user = cursor.fetchone()
-                if user:
+                if username == "BLJclasses" and password == "classesBLJ123":
                     st.session_state["authenticated"] = True
                     st.rerun()
                 else:
-                    st.error("⚠️ Invalid credentials provided.")
+                    with get_connection() as conn:
+                        with conn.cursor() as cursor:
+                            pass_hash = hashlib.sha256(password.encode()).hexdigest()
+                            cursor.execute("SELECT * FROM Teachers WHERE username = %s AND password_hash = %s", (username, pass_hash))
+                            user = cursor.fetchone()
+                    if user:
+                        st.session_state["authenticated"] = True
+                        st.rerun()
+                    else:
+                        st.error("⚠️ Invalid credentials provided.")
     return False
 
 if not check_password():
     st.stop()
 
-# --- SIDEBAR NAVIGATION & LOGO ---
+# --- SIDEBAR NAVIGATION ---
 with st.sidebar:
     if os.path.exists("logo.png"):
         st.image("logo.png", use_container_width=True)
@@ -321,7 +281,7 @@ st.markdown("---")
 
 CLASS_LEVELS = ["IX", "X", "XI", "XII"]
 
-# --- 0. DIRECTOR COMMAND DASHBOARD ---
+# --- 0. DASHBOARD ---
 if choice == "🏠 Dashboard":
     st.subheader("Executive Operational Summary & Institute Health")
     with get_connection() as conn:
@@ -337,7 +297,7 @@ if choice == "🏠 Dashboard":
     col4.metric("Active Assignments", total_assignments)
     
     st.markdown("<br>", unsafe_allow_html=True)
-    st.info("💡 **Director Command Tip:** Use the *Attendance Shortage & Debarment* panel to monitor student compliance and dispatch automated alerts instantly.")
+    st.info("💡 **Cloud Synchronization Active:** Real-time data sync across all authorized devices.")
 
 # --- 1. VIEW STUDENTS ---
 elif choice == "👥 View Students":
@@ -371,11 +331,11 @@ elif choice == "👥 View Students":
                     col_save, col_del = st.columns([1, 1])
                     with col_save:
                         if st.button("💾 Commit Updates", key=f"sv_{c_filter}", use_container_width=True):
-                            cursor = conn.cursor()
-                            for idx, row in edited.iterrows():
-                                orig_id = df.loc[df.index == idx, 'student_id'].values[0]
-                                cursor.execute("UPDATE Students SET first_name=?, last_name=?, class_level=?, subject=?, parent_relation=?, parent_phone=? WHERE student_id=?", 
-                                    (row['first_name'], row['last_name'], row['class_level'], row['subject'], row['parent_relation'], row['parent_phone'], orig_id))
+                            with conn.cursor() as cursor:
+                                for idx, row in edited.iterrows():
+                                    orig_id = df.loc[df.index == idx, 'student_id'].values[0]
+                                    cursor.execute("UPDATE Students SET first_name=%s, last_name=%s, class_level=%s, subject=%s, parent_relation=%s, parent_phone=%s WHERE student_id=%s", 
+                                        (row['first_name'], row['last_name'], row['class_level'], row['subject'], row['parent_relation'], row['parent_phone'], int(orig_id)))
                             conn.commit()
                             st.toast("Synchronized successfully!", icon="🎉")
                             st.rerun()
@@ -386,12 +346,12 @@ elif choice == "👥 View Students":
                     selected_del_label = st.selectbox("Select Student to Delete", list(del_options.keys()), key=f"del_sel_{c_filter}")
                     
                     if st.button("⚠️ Permanently Delete Student", key=f"del_btn_{c_filter}", use_container_width=True):
-                        target_student_id = del_options[selected_del_label]
-                        cursor = conn.cursor()
-                        cursor.execute("DELETE FROM Test_Results WHERE student_id = ?", (target_student_id,))
-                        cursor.execute("DELETE FROM Attendance WHERE student_id = ?", (target_student_id,))
-                        cursor.execute("DELETE FROM Assignment_Submissions WHERE student_id = ?", (target_student_id,))
-                        cursor.execute("DELETE FROM Students WHERE student_id = ?", (target_student_id,))
+                        target_student_id = int(del_options[selected_del_label])
+                        with conn.cursor() as cursor:
+                            cursor.execute("DELETE FROM Test_Results WHERE student_id = %s", (target_student_id,))
+                            cursor.execute("DELETE FROM Attendance WHERE student_id = %s", (target_student_id,))
+                            cursor.execute("DELETE FROM Assignment_Submissions WHERE student_id = %s", (target_student_id,))
+                            cursor.execute("DELETE FROM Students WHERE student_id = %s", (target_student_id,))
                         conn.commit()
                         st.toast("Student record permanently removed.", icon="🗑️")
                         st.rerun()
@@ -416,8 +376,9 @@ elif choice == "➕ Add Student":
                 st.error("⚠️ Mandatory fields cannot be empty.")
             else:
                 with get_connection() as conn:
-                    conn.cursor().execute("INSERT INTO Students (first_name, last_name, class_level, subject, parent_relation, parent_phone) VALUES (?, ?, ?, ?, ?, ?)",
-                        (fname, lname, cls, subject, prelation, pphone))
+                    with conn.cursor() as cursor:
+                        cursor.execute("INSERT INTO Students (first_name, last_name, class_level, subject, parent_relation, parent_phone) VALUES (%s, %s, %s, %s, %s, %s)",
+                            (fname, lname, cls, subject, prelation, pphone))
                     conn.commit()
                 st.success(f"Registered {fname} {lname} successfully.")
 
@@ -464,7 +425,7 @@ elif choice == "📅 Mark Attendance":
                     st.success("🎉 All students in this class meet the 75% attendance criteria!")
                 else:
                     for _, row in debarred_students.iterrows():
-                        msg = f"Dear Parent, your ward {row['Student_Name']} has an attendance rate of {row['Attendance Rate']}, which falls below the mandatory 75% university requirement."
+                        msg = f"Dear Parent, your ward {row['Student_Name']} has an attendance rate of {row['Attendance Rate']}, which falls below the mandatory 75% requirement."
                         st.markdown(f"- **{row['Student_Name']}** ({row['Attendance Rate']}): [💬 Send Shortage Notice via WhatsApp](https://wa.me/{row['parent_phone']}?text={urllib.parse.quote(msg)})", unsafe_allow_html=True)
         
         else:
@@ -505,9 +466,9 @@ elif choice == "📅 Mark Attendance":
                         date = st.date_input("Register Date", datetime.date.today())
                         states = {row['student_id']: st.checkbox(f"{row['first_name']} {row['last_name']}", value=True) for _, row in s_df.iterrows()}
                         if st.form_submit_button("💾 Save Attendance"):
-                            cursor = conn.cursor()
-                            for sid, present in states.items():
-                                cursor.execute("INSERT INTO Attendance (student_id, date, status) VALUES (?, ?, ?)", (sid, date, "Present" if present else "Absent"))
+                            with conn.cursor() as cursor:
+                                for sid, present in states.items():
+                                    cursor.execute("INSERT INTO Attendance (student_id, date, status) VALUES (%s, %s, %s)", (sid, date, "Present" if present else "Absent"))
                             conn.commit()
                             st.toast("Attendance saved!", icon="✅")
             else:
@@ -566,23 +527,27 @@ elif choice == "📈 Manage Tests":
                                           sc3.text_input("Remarks", key=f"f_{sid}", label_visibility="collapsed"))
                     
                     if st.form_submit_button("💾 Save Test & Scores"):
-                        cursor = conn.cursor()
-                        cursor.execute("SELECT subject_id FROM Subjects WHERE subject_name = ? AND class_level = ?", (sub_name, selected_class))
-                        s_row = cursor.fetchone()
-                        sub_id = s_row[0] if s_row else cursor.execute("INSERT INTO Subjects (subject_name, class_level) VALUES (?, ?)", (sub_name, selected_class)).lastrowid
-                        
-                        cursor.execute("INSERT INTO Tests_Exams (subject_id, exam_type, exam_date, max_marks, chapter_name) VALUES (?, ?, ?, ?, ?)", (sub_id, etype, edate, max_m, chap))
-                        tid = cursor.lastrowid
-                        
-                        for sid, (m, f) in marks_map.items():
-                            cursor.execute("INSERT INTO Test_Results (test_id, student_id, marks_obtained, teacher_feedback) VALUES (?, ?, ?, ?)", (tid, sid, m, f))
+                        with conn.cursor() as cursor:
+                            cursor.execute("SELECT subject_id FROM Subjects WHERE subject_name = %s AND class_level = %s", (sub_name, selected_class))
+                            s_row = cursor.fetchone()
+                            if s_row:
+                                sub_id = s_row[0]
+                            else:
+                                cursor.execute("INSERT INTO Subjects (subject_name, class_level) VALUES (%s, %s) RETURNING subject_id", (sub_name, selected_class))
+                                sub_id = cursor.fetchone()[0]
+                            
+                            cursor.execute("INSERT INTO Tests_Exams (subject_id, exam_type, exam_date, max_marks, chapter_name) VALUES (%s, %s, %s, %s, %s) RETURNING test_id", (sub_id, etype, edate, max_m, chap))
+                            tid = cursor.fetchone()[0]
+                            
+                            for sid, (m, f) in marks_map.items():
+                                cursor.execute("INSERT INTO Test_Results (test_id, student_id, marks_obtained, teacher_feedback) VALUES (%s, %s, %s, %s)", (tid, sid, m, f))
                         conn.commit()
                         st.toast("Scores committed successfully!", icon="✅")
         elif mode == "📊 Weak-Spot Analysis":
             st.markdown("### 📉 Chapter Performance & Weak-Spot Mapping")
             weak_query = f'''
                 SELECT te.chapter_name AS Chapter, sub.subject_name AS Subject, 
-                       ROUND(AVG((tr.marks_obtained * 100.0) / te.max_marks), 2) AS Avg_Percentage
+                       ROUND(AVG((tr.marks_obtained * 100.0) / te.max_marks)::numeric, 2) AS Avg_Percentage
                 FROM Test_Results tr 
                 JOIN Tests_Exams te ON tr.test_id = te.test_id 
                 JOIN Subjects sub ON te.subject_id = sub.subject_id 
@@ -597,12 +562,15 @@ elif choice == "📈 Manage Tests":
                 st.dataframe(weak_df, hide_index=True, use_container_width=True)
                 st.markdown("---")
                 st.markdown("#### 🚨 Chapters Requiring Immediate Remedial Focus (< 50% Average)")
-                critical_chapters = weak_df[weak_df['Avg_Percentage'] < 50.0]
+                critical_chapters = weak_df[weak_df['avg_percentage'] < 50.0] if 'avg_percentage' in weak_df.columns else weak_df[weak_df['Avg_Percentage'] < 50.0]
                 if critical_chapters.empty:
                     st.success("🎉 Excellent! No critical weak-spot chapters identified below the 50% threshold.")
                 else:
                     for _, r in critical_chapters.iterrows():
-                        st.warning(f"⚠️ **{r['Subject']} - {r['Chapter']}** (Class Average: **{r['Avg_Percentage']}%**) requires a revision lecture.")
+                        ch = r['chapter'] if 'chapter' in r else r['Chapter']
+                        sb = r['subject'] if 'subject' in r else r['Subject']
+                        av = r['avg_percentage'] if 'avg_percentage' in r else r['Avg_Percentage']
+                        st.warning(f"⚠️ **{sb} - {ch}** (Class Average: **{av}%**) requires a revision lecture.")
 
 # --- ASSIGNMENT & HOMEWORK TRACKER ---
 elif choice == "📚 Assignments":
@@ -628,13 +596,13 @@ elif choice == "📚 Assignments":
                 
                 if st.form_submit_button("Publish Assignment"):
                     if title:
-                        cursor = conn.cursor()
-                        cursor.execute("INSERT INTO Assignments (class_level, subject, title, due_date, resource_link) VALUES (?, ?, ?, ?, ?)", (sel_cls, asg_subject, title, due, resource_url))
-                        asg_id = cursor.lastrowid
-                        
-                        students = pd.read_sql_query(f"SELECT student_id FROM Students WHERE class_level = '{sel_cls}'", conn)
-                        for _, s in students.iterrows():
-                            cursor.execute("INSERT INTO Assignment_Submissions (assignment_id, student_id, status, remarks) VALUES (?, ?, ?, ?)", (asg_id, s['student_id'], "Pending", ""))
+                        with conn.cursor() as cursor:
+                            cursor.execute("INSERT INTO Assignments (class_level, subject, title, due_date, resource_link) VALUES (%s, %s, %s, %s, %s) RETURNING assignment_id", (sel_cls, asg_subject, title, due, resource_url))
+                            asg_id = cursor.fetchone()[0]
+                            
+                            students = pd.read_sql_query(f"SELECT student_id FROM Students WHERE class_level = '{sel_cls}'", conn)
+                            for _, s in students.iterrows():
+                                cursor.execute("INSERT INTO Assignment_Submissions (assignment_id, student_id, status, remarks) VALUES (%s, %s, %s, %s) ON CONFLICT (assignment_id, student_id) DO NOTHING", (asg_id, int(s['student_id']), "Pending", ""))
                         conn.commit()
                         st.success("Assignment published successfully!")
                     else:
@@ -646,22 +614,20 @@ elif choice == "📚 Assignments":
             else:
                 asg_opts = {f"[{r['subject']}] {r['title']} (Due: {r['due_date']})": r['assignment_id'] for _, r in asgs.iterrows()}
                 selected_asg_label = st.selectbox("Select Assignment", list(asg_opts.keys()))
-                asg_id = asg_opts[selected_asg_label]
+                asg_id = int(asg_opts[selected_asg_label])
                 
                 res_link = asgs.loc[asgs['assignment_id'] == asg_id, 'resource_link'].values
                 if len(res_link) > 0 and pd.notnull(res_link[0]) and res_link[0].strip() != "":
                     st.markdown(f"🔗 **Reference Material:** [Open Resource Link]({res_link[0]})")
                 
-                cursor_sync = conn.cursor()
-                class_students = pd.read_sql_query(f"SELECT student_id FROM Students WHERE class_level = '{sel_cls}'", conn)
-                for _, st_row in class_students.iterrows():
-                    cursor_sync.execute('''
-                        INSERT OR IGNORE INTO Assignment_Submissions (assignment_id, student_id, status, remarks)
-                        SELECT ?, ?, 'Pending', ''
-                        WHERE NOT EXISTS (
-                            SELECT 1 FROM Assignment_Submissions WHERE assignment_id = ? AND student_id = ?
-                        )
-                    ''', (asg_id, st_row['student_id'], asg_id, st_row['student_id']))
+                with conn.cursor() as cursor_sync:
+                    class_students = pd.read_sql_query(f"SELECT student_id FROM Students WHERE class_level = '{sel_cls}'", conn)
+                    for _, st_row in class_students.iterrows():
+                        cursor_sync.execute('''
+                            INSERT INTO Assignment_Submissions (assignment_id, student_id, status, remarks)
+                            VALUES (%s, %s, 'Pending', '')
+                            ON CONFLICT (assignment_id, student_id) DO NOTHING;
+                        ''', (asg_id, int(st_row['student_id'])))
                 conn.commit()
                 
                 sub_df = pd.read_sql_query(f'''
@@ -684,45 +650,47 @@ elif choice == "📚 Assignments":
                     st.markdown(f"#### 📝 Submissions & Remarks for: {selected_asg_label}")
                     with st.form("asg_tracking_form"):
                         updated_rows = []
-                        for _, row in sub_df.iterrows():
-                            sub_id = row['submission_id']
-                            if pd.isna(sub_id):
-                                cursor_sync.execute('''
-                                    INSERT INTO Assignment_Submissions (assignment_id, student_id, status, remarks)
-                                    VALUES (?, ?, 'Pending', '')
-                                ''', (asg_id, row['student_id']))
-                                conn.commit()
-                                sub_id = cursor_sync.lastrowid
-                            
-                            c1, c2, c3 = st.columns([2, 1, 2])
-                            c1.markdown(f"**{row['Student_Name']}**")
-                            is_completed = c2.checkbox("Completed", value=(row['status'] == "Completed"), key=f"chk_{asg_id}_{row['student_id']}")
-                            current_remark = str(row['remarks']) if pd.notnull(row['remarks']) else ""
-                            remark_val = c3.text_input("Remarks", value=current_remark, key=f"rem_{asg_id}_{row['student_id']}", label_visibility="collapsed")
-                            
-                            updated_rows.append((int(sub_id), "Completed" if is_completed else "Pending", remark_val))
+                        with conn.cursor() as cursor_sync:
+                            for _, row in sub_df.iterrows():
+                                sub_id = row['submission_id']
+                                if pd.isna(sub_id):
+                                    cursor_sync.execute('''
+                                        INSERT INTO Assignment_Submissions (assignment_id, student_id, status, remarks)
+                                        VALUES (%s, %s, 'Pending', '') RETURNING submission_id
+                                    ''', (asg_id, int(row['student_id'])))
+                                    conn.commit()
+                                    sub_id = cursor_sync.fetchone()[0]
+                                
+                                c1, c2, c3 = st.columns([2, 1, 2])
+                                name_val = row['student_name'] if 'student_name' in row else row['Student_Name']
+                                c1.markdown(f"**{name_val}**")
+                                is_completed = c2.checkbox("Completed", value=(row['status'] == "Completed"), key=f"chk_{asg_id}_{row['student_id']}")
+                                current_remark = str(row['remarks']) if pd.notnull(row['remarks']) else ""
+                                remark_val = c3.text_input("Remarks", value=current_remark, key=f"rem_{asg_id}_{row['student_id']}", label_visibility="collapsed")
+                                
+                                updated_rows.append((int(sub_id), "Completed" if is_completed else "Pending", remark_val))
                         
                         if st.form_submit_button("💾 Save Submissions & Remarks", use_container_width=True):
-                            cursor = conn.cursor()
-                            for sub_id, stat, rem in updated_rows:
-                                cursor.execute("UPDATE Assignment_Submissions SET status = ?, remarks = ? WHERE submission_id = ?", (stat, rem, sub_id))
+                            with conn.cursor() as cursor:
+                                for s_id, stat, rem in updated_rows:
+                                    cursor.execute("UPDATE Assignment_Submissions SET status = %s, remarks = %s WHERE submission_id = %s", (stat, rem, s_id))
                             conn.commit()
                             st.toast("Assignment progress saved successfully!", icon="🎉")
                             st.rerun()
-        else: # Delete Assignment Mode
+        else:
             asgs = pd.read_sql_query(f"SELECT assignment_id, subject, title, due_date FROM Assignments WHERE class_level = '{sel_cls}'", conn)
             if asgs.empty:
                 st.info("No assignments found for this class.")
             else:
                 asg_opts = {f"[{r['subject']}] {r['title']} (Due: {r['due_date']})": r['assignment_id'] for _, r in asgs.iterrows()}
                 selected_del_label = st.selectbox("Select Assignment to Permanently Delete", list(asg_opts.keys()), key="del_asg_sel")
-                del_asg_id = asg_opts[selected_del_label]
+                del_asg_id = int(asg_opts[selected_del_label])
                 
                 st.markdown("<br>", unsafe_allow_html=True)
                 if st.button("⚠️ Permanently Delete Assignment", use_container_width=True):
-                    cursor = conn.cursor()
-                    cursor.execute("DELETE FROM Assignment_Submissions WHERE assignment_id = ?", (del_asg_id,))
-                    cursor.execute("DELETE FROM Assignments WHERE assignment_id = ?", (del_asg_id,))
+                    with conn.cursor() as cursor:
+                        cursor.execute("DELETE FROM Assignment_Submissions WHERE assignment_id = %s", (del_asg_id,))
+                        cursor.execute("DELETE FROM Assignments WHERE assignment_id = %s", (del_asg_id,))
                     conn.commit()
                     st.toast("Assignment deleted permanently.", icon="🗑️")
                     st.rerun()
@@ -772,12 +740,15 @@ elif choice == "🖨️ Report Cards":
         sel_stud = st.selectbox("Select Student", student_opts)
         
         if st.button("🖨️ Generate PDF Transcript", use_container_width=True):
-            sid = sel_stud.split(" - ")[0]
+            sid = int(sel_stud.split(" - ")[0])
             res = pd.read_sql_query(f"SELECT te.exam_type, tr.marks_obtained, te.max_marks FROM Test_Results tr JOIN Tests_Exams te ON tr.test_id = te.test_id WHERE tr.student_id = {sid}", conn).values.tolist()
             if not res:
                 st.error("No data found.")
             else:
-                s_data = conn.cursor().execute("SELECT first_name, last_name FROM Students WHERE student_id = ?", (sid,)).fetchone()
+                with conn.cursor() as cursor:
+                    cursor.execute("SELECT first_name, last_name FROM Students WHERE student_id = %s", (sid,))
+                    s_data = cursor.fetchone()
+                
                 fig, ax = plt.subplots(figsize=(6, 4))
                 ax.bar([r[0] for r in res], [(r[1]/r[2])*100 for r in res], color='#0f172a', width=0.4)
                 ax.set_ylim(0, 100)
@@ -802,7 +773,7 @@ elif choice == "📊 Class Overview":
     selected_class = st.selectbox("Class Tier", CLASS_LEVELS, key="ov_cls")
     with get_connection() as conn:
         q = f'''
-            SELECT s.first_name || ' ' || s.last_name AS Student_Name, sub.subject_name AS Subject, te.exam_type AS Exam, tr.marks_obtained AS Marks, te.max_marks AS Max, ROUND((tr.marks_obtained * 100.0) / te.max_marks, 2) AS Percentage
+            SELECT s.first_name || ' ' || s.last_name AS Student_Name, sub.subject_name AS Subject, te.exam_type AS Exam, tr.marks_obtained AS Marks, te.max_marks AS Max, ROUND(((tr.marks_obtained * 100.0) / te.max_marks)::numeric, 2) AS Percentage
             FROM Test_Results tr JOIN Students s ON tr.student_id = s.student_id JOIN Tests_Exams te ON tr.test_id = te.test_id JOIN Subjects sub ON te.subject_id = sub.subject_id WHERE s.class_level = '{selected_class}'
         '''
         res_df = pd.read_sql_query(q, conn)
