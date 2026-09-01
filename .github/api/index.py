@@ -1,11 +1,10 @@
 import os
 import sys
 
-# Ensure the root directory is in the path so it can find app.py or dependencies
+# Add root directory to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from http.server import BaseHTTPRequestHandler
-import json
 
 class handler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -13,16 +12,21 @@ class handler(BaseHTTPRequestHandler):
         self.send_header('Content-type', 'text/html; charset=utf-8')
         self.end_headers()
         
-        # A simple response or redirect notice since Streamlit requires WebSockets 
-        # which standard Vercel serverless functions cannot stream persistently.
         html_content = """
+        <!DOCTYPE html>
         <html>
-            <head><title>BLJ Classes Portal</title></head>
-            <body style="font-family: sans-serif; text-align: center; margin-top: 50px;">
-                <h2>BLJ Classes Portal - Serverless Endpoint</h2>
-                <p>Vercel serverless functions are active. Note that Streamlit natively requires a persistent WebSocket server.</p>
+            <head>
+                <title>BLJ Classes Portal</title>
+            </head>
+            <body style="font-family: Arial, sans-serif; text-align: center; margin-top: 80px; background-color: #0f172a; color: #f8fafc;">
+                <h2>BLJ Classes Portal</h2>
+                <p>Serverless environment initialized on Vercel.</p>
+                <p style="color: #94a3b8; font-size: 14px;">Note: Streamlit apps require a persistent websocket server process.</p>
             </body>
         </html>
         """
         self.wfile.write(html_content.encode('utf-8'))
         return
+
+    def do_POST(self):
+        self.do_GET()
