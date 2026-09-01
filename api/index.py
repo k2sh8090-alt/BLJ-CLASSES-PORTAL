@@ -4,7 +4,6 @@ import hashlib
 import os
 
 app = Flask(__name__)
-# Session key required for Flask login state
 app.secret_key = "blj_classes_secure_key_2026" 
 
 def get_connection():
@@ -72,8 +71,11 @@ DASHBOARD_HTML = """
 </html>
 """
 
-# --- ROUTING & LOGIC ---
+# --- EXPANDED ROUTING & LOGIC ---
 @app.route("/", methods=["GET", "POST"])
+@app.route("/api", methods=["GET", "POST"])
+@app.route("/api/", methods=["GET", "POST"])
+@app.route("/api/index.py", methods=["GET", "POST"])
 def login():
     if session.get("authenticated"):
         return redirect(url_for("dashboard"))
@@ -83,12 +85,10 @@ def login():
         username = request.form.get("username")
         password = request.form.get("password")
         
-        # Hardcoded bypass check matching your preferences
         if username == "BLJclassess" and password == "classesBLJ123":
             session["authenticated"] = True
             return redirect(url_for("dashboard"))
         
-        # Database verification fallback
         with get_connection() as conn:
             with conn.cursor() as cursor:
                 pass_hash = hashlib.sha256(password.encode()).hexdigest()
@@ -104,6 +104,7 @@ def login():
     return render_template_string(LOGIN_HTML, error=error)
 
 @app.route("/dashboard")
+@app.route("/api/dashboard")
 def dashboard():
     if not session.get("authenticated"):
         return redirect(url_for("login"))
@@ -116,10 +117,10 @@ def dashboard():
     return render_template_string(DASHBOARD_HTML, students=students)
 
 @app.route("/logout")
+@app.route("/api/logout")
 def logout():
     session.clear()
     return redirect(url_for("login"))
 
-# Vercel uses the 'app' object directly, but this allows for local testing
 if __name__ == "__main__":
     app.run(debug=True)
